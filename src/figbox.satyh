@@ -1,21 +1,18 @@
-@require: base/list-ext
-@require: gr
-@require: option
-@require: base/color-ext
+use package open Stdlib
 
-module FigBox : sig
+module FigBox :> sig
 
 % context を与えて "箱" になるもの．
-  type figbox
+  type figbox :: o
 
 % FigBox.figbox の新規作成
-  val include-image : int?-> length -> string -> figbox
-  val include-image-with-height : int?-> length -> string -> figbox
-  val include-image-with-size : int?-> length -> length -> string -> figbox
-  val dummy-box: length ?-> length -> length -> figbox
-  val textbox: (context -> context)?-> inline-text -> figbox
-  val textbox-with-width: (context -> context)?-> length -> inline-text -> figbox
-  val textblock: (context -> context)?-> length -> block-text -> figbox
+  val include-image : ?(page : int) length -> string -> figbox
+  val include-image-with-height : ?(page : int) length -> string -> figbox
+  val include-image-with-size : ?(page : int) length -> length -> string -> figbox
+  val dummy-box: ?(depth : length) length -> length -> figbox
+  val textbox: ?(ctxf : context -> context) inline-text -> figbox
+  val textbox-with-width: ?(ctxf : context -> context) length -> inline-text -> figbox
+  val textblock: ?(ctxf : context -> context) length -> block-text -> figbox
 
   % inline-boxes から作成
   val inlinebox: inline-boxes -> figbox
@@ -23,10 +20,10 @@ module FigBox : sig
   val figbox-nil: figbox
 
   % graphics から作成
-  val from-graphics: point?-> point -> graphics list -> figbox
-  val from-graphics-given-context: point?-> point -> (context -> graphics list) -> figbox
-  val from-bbox-graphics: graphics list -> figbox
-  val from-bbox-graphics-given-context: (context -> graphics list) -> figbox
+  val from-graphics: ?(base-point : length * length) length * length -> graphics -> figbox
+  val from-graphics-given-context: ?(base-point : length * length) length * length -> (context -> graphics) -> figbox
+  val from-bbox-graphics: graphics -> figbox
+  val from-bbox-graphics-given-context: (context -> graphics) -> figbox
 
 % FigBox.figbox の変換
   val margin : length -> length -> length -> length -> figbox -> figbox
@@ -35,23 +32,23 @@ module FigBox : sig
   val hvmargin : length -> figbox -> figbox
   val draft: figbox -> figbox
   val shift: length -> length -> figbox -> figbox
-  val glass-box: (float * float)?-> length -> length -> figbox -> figbox
+  val glass-box: ?(aligns : float * float) length -> length -> figbox -> figbox
   val frame: length -> color -> figbox -> figbox
   val bgcolor: color -> figbox -> figbox
   val rotate: float -> figbox -> figbox
-  val scale: float?-> float -> figbox -> figbox
+  val scale: ?(htratio : float) float -> figbox -> figbox
 
   % 複数の FigBox.figbox を合成
-  val hconcat : float?-> figbox list -> figbox
-  val vconcat : float?-> figbox list -> figbox
+  val hconcat : ?(align : float) list figbox -> figbox
+  val vconcat : ?(align : float) list figbox -> figbox
 
   val gap: length -> figbox
-  val sep: ((length * length) -> (length * length) -> graphics list)?-> length -> figbox
+  val sep: ?(strokef : (length * length) -> (length * length) -> graphics) length -> figbox
 
   % 任意の graphics list で「落書き」する関数
-  val graffiti: graphics list -> figbox -> figbox
-  val graffiti-given-context: (context -> graphics list) -> figbox -> figbox
-  val graffiti-given-metrics: (length * length -> context -> graphics list) -> figbox -> figbox
+  val graffiti: list graphics -> figbox -> figbox
+  val graffiti-given-context: (context -> list graphics) -> figbox -> figbox
+  val graffiti-given-metrics: (length * length -> context -> list graphics) -> figbox -> figbox
 
 % commands / embedding
 
@@ -59,23 +56,23 @@ module FigBox : sig
   val embed-figbox: context -> figbox -> inline-boxes
 
   % inline-boxes への変換
-  val to-graphics: point?-> context -> figbox -> graphics
+  val to-graphics: ?(point : length * length) context -> figbox -> graphics
 
-  direct +fig-center   : [figbox] block-cmd
-  direct \fig-center   : [figbox] inline-cmd
-  direct +fig-block    : [float?; figbox] block-cmd
-  direct \fig-block    : [float?; figbox] inline-cmd
-  direct +fig-on-right : [length?; figbox; block-text] block-cmd
-  direct \fig-on-right : [length?; figbox; block-text] inline-cmd
-  direct +fig-on-left  : [length?; figbox; block-text] block-cmd
-  direct \fig-on-left  : [length?; figbox; block-text] inline-cmd
-  direct \fig-abs-pos  : [(length * length); figbox] inline-cmd
-  direct +fig-abs-pos  : [(length * length); figbox] block-cmd
+  val +fig-center   : block [figbox]
+  val \fig-center   : inline [figbox]
+  val +fig-block    : block [?(align : float) figbox]
+  val \fig-block    : inline [?(align : float) figbox]
+  val +fig-on-right : block [?(margin : length) figbox, block-text]
+  val \fig-on-right : inline [?(margin : length) figbox, block-text]
+  val +fig-on-left  : block [?(margin : length) figbox, block-text]
+  val \fig-on-left  : inline [?(margin : length) figbox, block-text]
+  val \fig-abs-pos  : inline [(length * length), figbox]
+  val +fig-abs-pos  : block [(length * length), figbox]
 
-  direct \fig-inline : [float?; figbox] inline-cmd
+  val \fig-inline : inline [?(align : float) figbox]
 
 % sep の option 引数に用いられる strokef
-  val stroke-line: length -> color -> (length * length) -> (length * length) -> graphics list
+  val stroke-line: length -> color -> (length * length) -> (length * length) -> graphics
 
 % align
   val align-left : float
@@ -85,6 +82,11 @@ module FigBox : sig
   val align-bottom : float
 
 end = struct
+
+  % PATCH START
+  val graphics-nil = unite-graphics []
+  val get-graphics-bbox gr = get-graphics-bbox gr |> Option.from ((0pt, 0pt), (0pt, 0pt))
+  % PATCH END
 
   type gapinfo =
     | HorizontalGap of length * length  % 水平にものを並べる際に生じる gap。引数は間に置くべき箱の高さと深さ。
@@ -96,47 +98,51 @@ end = struct
 
   % FigBox.figbox を inline-boxes 型に変換する．
   % embed-math みたいな interface にしたかった．
-  let embed-figbox ctx fb =
+  val embed-figbox ctx fb =
     match fb with
       | Box(embedf) -> embedf ctx
       | AxisDependingBox(embedf) -> inline-nil
+    end
 
-  % let embed-gap is-horizontal ctx fb =
+  % val embed-gap is-horizontal ctx fb =
   %   match fb with
   %     | Box(embedf) -> embedf ctx
   %     | AxisDependingBox(embedf) -> embedf is-horizontal ctx
+  %   end
 
   type interimbox =
     | InterImBox of inline-boxes
     | InterImAxisDependingBox of gapinfo -> context -> inline-boxes
 
   % まずinline-boxes に convert
-  let convert-box-to-ib ctx fb =
+  val convert-box-to-ib ctx fb =
     match fb with
     | Box(embedf) -> InterImBox(embedf ctx)
     | AxisDependingBox(embedf) -> InterImAxisDependingBox(embedf)
+    end
 
-  let embed-interimbox gapinfo ctx fb =
+  val embed-interimbox gapinfo ctx fb =
     match fb with
     | InterImBox(ib) -> ib
     | InterImAxisDependingBox(embedf) -> embedf gapinfo ctx
+    end
 
   % 定数
 
-  let align-left   = 0.0
-  let align-right  = 1.0
-  let align-center = 0.5
-  let align-top    = 1.0
-  let align-bottom = 0.0
+  val align-left   = 0.0
+  val align-right  = 1.0
+  val align-center = 0.5
+  val align-top    = 1.0
+  val align-bottom = 0.0
 
   % strokef
 
-  let stroke-line lwid clr pt1 pt2 = [stroke lwid clr (Gr.line pt1 pt2)]
+  val stroke-line lwid clr pt1 pt2 = stroke lwid clr (Gr.line pt1 pt2)
 
 % FigBox.figbox 型の新規作成
   % ユーザが画像を読み込むときに使える統一的な関数．
   % 拡張子を判別してヴァリアントを変える．
-  let include-image ?:pg wid pth =
+  val include-image ?(page = pg) wid pth =
     let embedf ctx =
       let pg = Option.from 1 pg in
       let sep-pat = regexp-of-string `\.` in
@@ -153,23 +159,24 @@ end = struct
       | _ ->
           let () = display-message (`Failed to include image: [` ^ pth ^ `]`) in
           inline-nil
+      end
     in
     Box(embedf)
 
-  let include-image-with-height ?:pg ht pth =
+  val include-image-with-height ?(page = pg) ht pth =
     let embedf ctx =
       let pg = Option.from 1 pg in
-      let ib = embed-figbox ctx (include-image ?:pg 1pt pth) in
+      let ib = embed-figbox ctx (include-image ?(page = pg) 1pt pth) in
       let (_, ht-norm, _) = get-natural-metrics ib in
       let scale = ht /' ht-norm in
-      embed-figbox ctx (include-image ?:pg (1pt *' scale) pth)
+      embed-figbox ctx (include-image ?(page = pg) (1pt *' scale) pth)
     in
     Box(embedf)
 
-  let include-image-with-size ?:pg ht wid pth =
+  val include-image-with-size ?(page = pg) ht wid pth =
     let embedf ctx =
       let pg = Option.from 1 pg in
-      let ib = embed-figbox ctx (include-image ?:pg wid pth) in
+      let ib = embed-figbox ctx (include-image ?(page = pg) wid pth) in
       let (_, ht-orig, _) = get-natural-metrics ib in
       let scale = ht /' ht-orig in
       let gr =
@@ -177,48 +184,48 @@ end = struct
           |> Gr.scale-graphics (0pt, 0pt) 1. scale
       in
       let ((xmin, ymin), (xmax, ymax)) = get-graphics-bbox gr in
-      inline-graphics (xmax -' xmin) (ymax -' ymin) 0pt (fun (x, y) -> [
+      inline-graphics (xmax -' xmin) (ymax -' ymin) 0pt (fun (x, y) ->
         gr |> shift-graphics (x -' xmin, y -' ymin)
-      ])
+      )
     in
     Box(embedf)
 
   % 小数点第二位まで表示
-  let show-length len =
+  val show-length len =
     let times-100 = round ((len /' 1pt) *. 100.) in
     let exp = (float times-100) /. 100. in
     embed-string (show-float exp ^ `pt`)
 
-  let draw-dummy-box ctx wid ht dp (x, y) =
+  val draw-dummy-box ctx wid ht dp (x, y) =
     let ctx = ctx |> set-font-size ((get-font-size ctx) *' 0.4) in
     let ib-wid = read-inline ctx (show-length wid) in
     let (wid-ib-wid, _, _) = get-natural-metrics ib-wid in
     let ib-ht = read-inline ctx (show-length (ht +' dp)) in
     let (_, ht-ib-ht, _) = get-natural-metrics ib-ht in
     let rect-path = Gr.rectangle (x, y -' dp) (x +' wid, y +' ht) in
-    [
-      (stroke 1pt Color.black rect-path);
-      (stroke 1pt Color.black (Gr.line (0pt, 0pt -' dp) (wid, ht) |> shift-path (x, y)));
-      (stroke 1pt Color.black (Gr.line (wid, 0pt -' dp) (0pt, ht) |> shift-path (x, y)));
-      (draw-text (x +' 2pt, y +' (ht -' dp -' ht-ib-ht) *' 0.5) ib-ht);
-      (draw-text (x +' (wid -' wid-ib-wid) *' 0.5, y -' dp +' 2pt) ib-wid);
+    unite-graphics [
+      (stroke 1pt Color.black rect-path),
+      (stroke 1pt Color.black (Gr.line (0pt, 0pt -' dp) (wid, ht) |> shift-path (x, y))),
+      (stroke 1pt Color.black (Gr.line (wid, 0pt -' dp) (0pt, ht) |> shift-path (x, y))),
+      (draw-text (x +' 2pt, y +' (ht -' dp -' ht-ib-ht) *' 0.5) ib-ht),
+      (draw-text (x +' (wid -' wid-ib-wid) *' 0.5, y -' dp +' 2pt) ib-wid),
     ]
 
-  let dummy-box ?:dp wid ht =
+  val dummy-box ?(depth = dp) wid ht =
     let embedf ctx =
       let dp = Option.from 0pt dp in
       inline-graphics wid ht dp (draw-dummy-box ctx wid ht dp)
     in
     Box(embedf)
 
-  let textbox ?:ctxf it =
+  val textbox ?(ctxf = ctxf) it =
     let embedf ctx =
       let ctxf = Option.from (fun x -> x) ctxf in
           read-inline (ctxf ctx) it
     in
     Box(embedf)
 
-  let textbox-with-width ?:ctxf wid it =
+  val textbox-with-width ?(ctxf = ctxf) wid it =
     let embedf ctx =
       let ctxf = Option.from (fun x -> x) ctxf in
       embed-block-bottom (ctxf ctx) wid (
@@ -228,7 +235,7 @@ end = struct
     in
     Box(embedf)
 
-  let textblock ?:ctxf wid bt =
+  val textblock ?(ctxf = ctxf) wid bt =
     let embedf ctx =
       let ctxf = Option.from (fun x -> x) ctxf in
       embed-block-bottom (ctxf ctx) wid (
@@ -237,11 +244,11 @@ end = struct
     in
     Box(embedf)
 
-  let inlinebox ib = Box(fun _ -> ib)
-  let rawbox ibf = Box(ibf)
-  let figbox-nil = Box(fun _ -> inline-nil)
+  val inlinebox ib = Box(fun _ -> ib)
+  val rawbox ibf = Box(ibf)
+  val figbox-nil = Box(fun _ -> inline-nil)
 
-  let from-graphics-given-context ?:bpt1 (x2, y2) grlstf =
+  val from-graphics-given-context ?(base-point = bpt1) (x2, y2) grf =
     let (x1, y1) = bpt1 |> Option.from (0pt, 0pt) in
     let (xmin, xmax) = if x1 <' x2 then (x1, x2) else (x2, x1) in
     let (ymin, ymax) = if y1 <' y2 then (y1, y2) else (y2, y1) in
@@ -249,144 +256,136 @@ end = struct
       let wid = (xmax -' xmin) in
       let ht = (ymax -' ymin) in
       inline-graphics wid ht 0pt
-        (fun (x, y) -> grlstf ctx |> List.map (shift-graphics (x -' xmin, y -' ymin)))
+        (fun (x, y) -> grf ctx |> shift-graphics (x -' xmin, y -' ymin))
     in
     Box(embedf)
 
-  let from-graphics ?:bpt1 bpt2 grlst =
+  val from-graphics ?(base-point = bpt1) bpt2 gr =
     match bpt1 with
-    | Some(bpt1) -> from-graphics-given-context ?:bpt1 bpt2 (fun _ -> grlst)
-    | None       -> from-graphics-given-context bpt2 (fun _ -> grlst)
+    | Some(bpt1) -> from-graphics-given-context ?(base-point = bpt1) bpt2 (fun _ -> gr)
+    | None       -> from-graphics-given-context bpt2 (fun _ -> gr)
+    end
 
-  let from-bbox-graphics-given-context grlstf =
+  val from-bbox-graphics-given-context grf =
     let embedf ctx =
-      match (grlstf ctx) with
-      | [] -> inline-nil
-      | gr-init :: rest ->
-          let foldf ((xminprev, yminprev), (xmaxprev, ymaxprev)) ((xmin, ymin), (xmax, ymax)) =
-            let xmin = if xmin <' xminprev then xmin else xminprev in
-            let ymin = if ymin <' yminprev then ymin else yminprev in
-            let xmax = if xmax >' xmaxprev then xmax else xmaxprev in
-            let ymax = if ymax >' ymaxprev then ymax else ymaxprev in
-            ((xmin, ymin), (xmax, ymax))
-          in
-          let ((xmin, ymin), (xmax, ymax)) = rest
-            |> List.map get-graphics-bbox
-            |> List.fold-left foldf (get-graphics-bbox gr-init)
-          in
-          let wid = (xmax -' xmin) in
-          let ht = (ymax -' ymin) in
-          inline-graphics wid ht 0pt
-            (fun (x, y) -> grlstf ctx |> List.map (shift-graphics (x -' xmin, y -' ymin)))
+      let gr = grf ctx in
+      let ((xmin, ymin), (xmax, ymax)) = get-graphics-bbox gr in
+      let wid = (xmax -' xmin) in
+      let ht = (ymax -' ymin) in
+      inline-graphics wid ht 0pt
+        (fun (x, y) -> gr |> shift-graphics (x -' xmin, y -' ymin))
     in
     Box(embedf)
 
-  let from-bbox-graphics grlst = from-bbox-graphics-given-context (fun _ -> grlst)
+  val from-bbox-graphics gr = from-bbox-graphics-given-context (fun _ -> gr)
 
 % FigBox の変換
 
-  let margin left right top bot fb =
+  val margin left right top bot fb =
     let embedf ctx =
       let ib =
-        let top-mgn = inline-graphics 0pt top 0pt (fun (_, _) -> []) in
-        let bot-mgn = inline-graphics 0pt bot 0pt (fun (_, _) -> []) in
+        let top-mgn = inline-graphics 0pt top 0pt (fun (_, _) -> graphics-nil) in
+        let bot-mgn = inline-graphics 0pt bot 0pt (fun (_, _) -> graphics-nil) in
         line-stack-bottom [
-          top-mgn ++ inline-fil;  % inline-fil は underfull を防ぐため
-          embed-figbox ctx fb;
-          bot-mgn ++ inline-fil;  % inline-fil は underfull を防ぐため
+          top-mgn ++ inline-fil,  % inline-fil は underfull を防ぐため
+          embed-figbox ctx fb,
+          bot-mgn ++ inline-fil,  % inline-fil は underfull を防ぐため
         ]
       in
       (inline-skip left) ++ ib ++ (inline-skip right)
     in
     Box(embedf)
 
-  let hmargin len = margin len len 0pt 0pt
-  let vmargin len = margin 0pt 0pt len len
-  let hvmargin len = margin len len len len
+  val hmargin len = margin len len 0pt 0pt
+  val vmargin len = margin 0pt 0pt len len
+  val hvmargin len = margin len len len len
 
-  let draft fb =
+  val draft fb =
     let embedf ctx =
       let ib = embed-figbox ctx fb in
       let (wid, ht, dp) = get-natural-metrics ib in
-      embed-figbox ctx (dummy-box ?:dp wid ht)
+      embed-figbox ctx (dummy-box ?(depth = dp) wid ht)
     in
     Box(embedf)
 
-  let shift xshift yshift fb =
+  val shift xshift yshift fb =
     let embedf ctx =
       let ib = embed-figbox ctx fb in
       let (wid, ht, dp) = get-natural-metrics ib in
-      inline-graphics wid ht dp (fun (x, y) -> [
+      inline-graphics wid ht dp (fun (x, y) ->
         draw-text (x +' xshift, y +' yshift) ib
-      ])
+      )
     in
     Box(embedf)
 
-  let gap len =
+  val gap len =
     let embedf gapinfo ctx =
       match gapinfo with
       | HorizontalGap(_, _) -> inline-skip len
-      | VerticalGap(_) -> inline-graphics 0pt len 0pt (fun (x, y) -> [])
+      | VerticalGap(_) -> inline-graphics 0pt len 0pt (fun (x, y) -> graphics-nil)
+      end
     in
     AxisDependingBox(embedf)
 
-  let sep ?:strokef len =
+  val sep ?(strokef = strokef) len =
     let strokef = strokef |> Option.from (stroke-line 0.5pt Color.black) in
     let embedf gapinfo ctx =
       match gapinfo with
       | HorizontalGap(ht, dp) ->
           let half-len = len *' 0.5 in
           inline-graphics len ht dp (fun (x, y) ->
-             strokef (x +' half-len, y -' dp) (x +' half-len, y +' ht)
+              strokef (x +' half-len, y -' dp) (x +' half-len, y +' ht)
           )
       | VerticalGap(wid) ->
           let half-len = len *' 0.5 in
           inline-graphics wid half-len half-len (fun (x, y) ->
               strokef (x, y) (x +' wid, y)
           )
+      end
     in
     AxisDependingBox(embedf)
 
 
-  let max-length a b = if a >' b then a else b
+  val max-length a b = if a >' b then a else b
 
-  let get-max-metrics iblst =
+  val get-max-metrics iblst =
     let metrics-lst = iblst |> List.map (get-natural-metrics) in
     let max-metrics (wid1, ht1, dp1) (wid2, ht2, dp2) =
       ( max-length wid1 wid2, max-length ht1 ht2, max-length dp1 dp2)
     in
     metrics-lst |> List.fold-left max-metrics (0pt, 0pt, 0pt)
 
-  let get-max-metrics-of-interimbox boxlst =
+  val get-max-metrics-of-interimbox boxlst =
     let convert-ib box =
       match box with
       | InterImBox(ib) -> ib
-      | InterImAxisDependingBox(_) -> inline-graphics 0pt 0pt 0pt (fun _ -> [])
+      | InterImAxisDependingBox(_) -> inline-graphics 0pt 0pt 0pt (fun _ -> graphics-nil)
+      end
     in
     boxlst |> List.map convert-ib |> get-max-metrics
 
   % 高さ ht, 深さ dp になるように ib にマージンをつける．
   % al が 0.0 のときは下揃え． 1.0 のときは上揃え．
-  let valign ht dp al ib =
+  val valign ht dp al ib =
     let (_, ht-ib, dp-ib) = get-natural-metrics ib in
     let diff = (ht +' dp) -' (ht-ib +' dp-ib) in
     % margin 0pt 0pt (diff *' (1. -. al)) (diff *' al) fb ctx
-    let top-mgn = inline-graphics 0pt (diff *' (1. -. al)) 0pt (fun (_, _) -> []) in
-    let bot-mgn = inline-graphics 0pt (diff *' al) 0pt (fun (_, _) -> []) in
+    let top-mgn = inline-graphics 0pt (diff *' (1. -. al)) 0pt (fun (_, _) -> graphics-nil) in
+    let bot-mgn = inline-graphics 0pt (diff *' al) 0pt (fun (_, _) -> graphics-nil) in
     line-stack-bottom [
-      top-mgn ++ inline-fil;  % inline-fil は underfull を防ぐため
-      ib;
-      bot-mgn ++ inline-fil;  % inline-fil は underfull を防ぐため
+      top-mgn ++ inline-fil,  % inline-fil は underfull を防ぐため
+      ib,
+      bot-mgn ++ inline-fil,  % inline-fil は underfull を防ぐため
     ]
 
   % 幅 wid になるように ib にマージンをつける．
   % al が 0.0 のときは左揃え． 1.0 のときは右揃え．
-  let halign wid al ib =
+  val halign wid al ib =
     let (wid-ib, _, _) = get-natural-metrics ib in
     let diff = wid -' wid-ib in
     inline-skip (diff *' al) ++ ib ++ inline-skip (diff *' (1. -. al))
 
-  let hconcat ?:al fblst =
+  val hconcat ?(align = al) fblst =
     let embedf ctx =
       let al = Option.from 0. al in
 
@@ -400,7 +399,7 @@ end = struct
     in
     Box(embedf)
 
-  let vconcat ?:al fblst =
+  val vconcat ?(align = al) fblst =
     let embedf ctx =
       let al = Option.from 0. al in
 
@@ -414,7 +413,7 @@ end = struct
     in
     Box(embedf)
 
-  let glass-box ?:als wid ht fb =
+  val glass-box ?(aligns = als) wid ht fb =
     let embedf ctx =
       let (h-al, v-al) = Option.from (0.5, 0.5) als in
       let ib-fig = embed-figbox ctx fb in
@@ -428,29 +427,29 @@ end = struct
     in
     Box(embedf)
 
-  let frame thk clr fb =
+  val frame thk clr fb =
     let embedf ctx =
       let ib-fig = embed-figbox ctx fb in
       let (wid, ht, dp) = get-natural-metrics ib-fig in
-      inline-graphics wid ht dp (fun (x, y) -> [
-        draw-text (x, y) ib-fig;
-        stroke thk clr (Gr.rectangle (x, y -' dp) (x +' wid, y +' ht));
+      inline-graphics wid ht dp (fun (x, y) -> unite-graphics [
+        draw-text (x, y) ib-fig,
+        stroke thk clr (Gr.rectangle (x, y -' dp) (x +' wid, y +' ht)),
       ])
     in
     Box(embedf)
 
-  let bgcolor clr fb =
+  val bgcolor clr fb =
     let embedf ctx =
       let ib-fig = embed-figbox ctx fb in
       let (wid, ht, dp) = get-natural-metrics ib-fig in
-      inline-graphics wid ht dp (fun (x, y) -> [
-        fill clr (Gr.rectangle (x, y -' dp) (x +' wid, y +' ht));
-        draw-text (x, y) ib-fig;
+      inline-graphics wid ht dp (fun (x, y) -> unite-graphics [
+        fill clr (Gr.rectangle (x, y -' dp) (x +' wid, y +' ht)),
+        draw-text (x, y) ib-fig,
       ])
     in
     Box(embedf)
 
-  let rotate angle fb =
+  val rotate angle fb =
     let embedf ctx =
       let ib-fig = embed-figbox ctx fb in
       let gr =
@@ -458,13 +457,13 @@ end = struct
           |> Gr.rotate-graphics (0pt, 0pt) angle
       in
       let ((xmin, ymin), (xmax, ymax)) = get-graphics-bbox gr in
-      inline-graphics (xmax -' xmin) (ymax -' ymin) 0pt (fun (x, y) -> [
+      inline-graphics (xmax -' xmin) (ymax -' ymin) 0pt (fun (x, y) ->
         gr |> shift-graphics (x -' xmin, y -' ymin)
-      ])
+      )
     in
     Box(embedf)
 
-  let scale ?:htratio wdratio fb =
+  val scale ?(htratio = htratio) wdratio fb =
     let embedf ctx =
       let htratio = htratio |> Option.from wdratio in
       let ib-fig = embed-figbox ctx fb in
@@ -473,65 +472,65 @@ end = struct
           |> Gr.scale-graphics (0pt, 0pt) wdratio htratio
       in
       let ((xmin, ymin), (xmax, ymax)) = get-graphics-bbox gr in
-      inline-graphics (xmax -' xmin) (ymax -' ymin) 0pt (fun (x, y) -> [
+      inline-graphics (xmax -' xmin) (ymax -' ymin) 0pt (fun (x, y) ->
         gr |> shift-graphics (x -' xmin, y -' ymin)
-      ])
+      )
     in
     Box(embedf)
 
-  let graffiti-given-metrics grlstf fb =
+  val graffiti-given-metrics grlstf fb =
     let embedf ctx =
       let ib-fig = embed-figbox ctx fb in
       let (wid, ht, dp) = get-natural-metrics ib-fig in
       let grlst = grlstf (wid, ht +' dp) ctx in
-      inline-graphics wid ht dp (fun orig -> [
-        [draw-text orig ib-fig];
-        grlst |> List.map (shift-graphics orig)
-      ] |> List.concat)
+      inline-graphics wid ht dp (fun orig -> unite-graphics [
+        draw-text orig ib-fig,
+        grlst |> List.map (shift-graphics orig) |> unite-graphics,
+      ])
     in
     Box(embedf)
 
-  let graffiti-given-context grlstf = graffiti-given-metrics (fun _ -> grlstf)
-  let graffiti grlst = graffiti-given-metrics (fun _ _ -> grlst)
+  val graffiti-given-context grlstf = graffiti-given-metrics (fun _ -> grlstf)
+  val graffiti grlst = graffiti-given-metrics (fun _ _ -> grlst)
 
 % Commands
 
-  let to-graphics ?:pt ctx fb =
+  val to-graphics ?(point = pt) ctx fb =
     let pt = pt |> Option.from (0pt, 0pt) in
     let ib = embed-figbox ctx fb in
     draw-text pt ib
 
-  let-block ctx +fig-block ?:al fb =
+  val block ctx +fig-block ?(align = al) fb =
     let al = Option.from 0.5 al in
     let ib-fig = embed-figbox ctx fb in
     let (wid-fig, _, _) = get-natural-metrics ib-fig in
     let left-margin = ((get-text-width ctx) -' wid-fig) *' al in
     line-break false false ctx ((inline-skip left-margin) ++ ib-fig ++ inline-fil)
 
-  let-block +fig-center fb = '<
-    +fig-block?:(0.5)(fb);
+  val block +fig-center fb = '<
+    +fig-block?(align = 0.5)(fb);
   >
 
-  let-inline ctx \fig-block ?:al fb =
+  val inline ctx \fig-block ?(align = al) fb =
     let bt = match al with
-      | Some(al) -> '<+fig-block?:(al)(fb);>
+      | Some(al) -> '<+fig-block?(align = al)(fb);>
       | None     -> '<+fig-block(fb);>
-    in
+    end in
     let ib-block = embed-block-breakable ctx (read-block ctx bt) in
     inline-fil ++ ib-block ++ omit-skip-after
 
-  let-inline \fig-center fb = {\fig-block?:(0.5)(fb);}
+  val inline \fig-center fb = {\fig-block?(align = 0.5)(fb);}
 
-  let empty-deco _ _ _ _ = []
+  val empty-deco _ _ _ _ = graphics-nil
 
-  let-block ctx +fig-on-right ?:margin fb bt =
+  val block ctx +fig-on-right ?(margin = margin) fb bt =
     let margin = Option.from 20pt margin in
     let ib = embed-figbox ctx fb in
     let (ib-wid, ib-ht, ib-dp) = get-natural-metrics ib in
     let pads = (0pt, ib-wid +' margin, 0pt, 0pt) in
     let textwid = get-text-width ctx in
     let deco (x, y) w h d =
-      [ draw-text (x +' textwid -' ib-wid, y +' h -' ib-ht) ib ]
+      draw-text (x +' textwid -' ib-wid, y +' h -' ib-ht) ib
     in
     let ib-content =
       block-frame-breakable ctx pads (deco, deco, empty-deco, empty-deco)
@@ -539,21 +538,21 @@ end = struct
     in
     ib-content
 
-  let-inline ctx \fig-on-right ?:margin fb bt =
+  val inline ctx \fig-on-right ?(margin = margin) fb bt =
     let bt = match margin with
-      | Some(margin) -> '<+fig-on-right?:(margin)(fb)(bt);>
+      | Some(margin) -> '<+fig-on-right?(margin = margin)(fb)(bt);>
       | None         -> '<+fig-on-right(fb)(bt);>
-    in
+    end in
     let ib-block = embed-block-breakable ctx (read-block ctx bt) in
     inline-fil ++ ib-block ++ omit-skip-after
 
-  let-block ctx +fig-on-left ?:margin fb bt =
+  val block ctx +fig-on-left ?(margin = margin) fb bt =
     let margin = Option.from 20pt margin in
     let ib = embed-figbox ctx fb in
     let (ib-wid, ib-ht, ib-dp) = get-natural-metrics ib in
     let pads = (ib-wid +' margin, 0pt, 0pt, 0pt) in
     let deco (x, y) w h d =
-      [ draw-text (x, y +' h -' ib-ht) ib ]
+      draw-text (x, y +' h -' ib-ht) ib
     in
     let ib-content =
       block-frame-breakable ctx pads (deco, deco, empty-deco, empty-deco)
@@ -561,25 +560,25 @@ end = struct
     in
     ib-content
 
-  let-inline ctx \fig-on-left ?:margin fb bt =
+  val inline ctx \fig-on-left ?(margin = margin) fb bt =
     let bt = match margin with
-      | Some(margin) -> '<+fig-on-left?:(margin)(fb)(bt);>
+      | Some(margin) -> '<+fig-on-left?(margin = margin)(fb)(bt);>
       | None         -> '<+fig-on-left(fb)(bt);>
-    in
+    end in
     let ib-block = embed-block-breakable ctx (read-block ctx bt) in
     inline-fil ++ ib-block ++ omit-skip-after
 
-  let fig-abs-pos ctx pt fb =
+  val fig-abs-pos ctx pt fb =
     let ib = embed-figbox ctx fb in
-    inline-graphics 0pt 0pt 0pt (fun _ -> [draw-text pt ib])
+    inline-graphics 0pt 0pt 0pt (fun _ -> draw-text pt ib)
 
-  let-inline ctx \fig-abs-pos = fig-abs-pos ctx
+  val inline ctx \fig-abs-pos pt fb = fig-abs-pos ctx pt fb
 
-  let-block ctx +fig-abs-pos pt fb =
+  val block ctx +fig-abs-pos pt fb =
     let it-gr = fig-abs-pos ctx pt fb in
     line-break false false ctx (it-gr ++ inline-fil)
 
-  let-inline ctx \fig-inline ?:align fb =
+  val inline ctx \fig-inline ?(align = align) fb =
     let align = Option.from 0. align in
     let ib = embed-figbox ctx fb in
     let fsize = get-font-size ctx in
@@ -587,6 +586,6 @@ end = struct
     let ht-inner = ht *' (1. -. align) +' fsize *' align in
     let dp-inner = 0pt *' (1. -. align) +' (ht -' fsize) *' align in
     inline-graphics wid ht-inner dp-inner
-      (fun (x, y) -> [draw-text (x, y -' dp-inner) ib])
+      (fun (x, y) -> draw-text (x, y -' dp-inner) ib)
 
 end
